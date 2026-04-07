@@ -1,4 +1,4 @@
----
+﻿---
 title: "475p"
 format: html
 editor: visual
@@ -12,7 +12,7 @@ library(survival)
 library("foreign")
 
 # 1. Read the data
-data <- read.csv("475projdata.csv")
+data <- read.csv("../data/bone_marrow_raw_export.csv")
 
 # 2. Handle special missing values
 # Replace "-1" and "1e+06" with NA
@@ -82,7 +82,7 @@ data_cleaned$survival_time[data_cleaned$survival_time < 0] <- NA
 data_cleaned$survival_time <- as.numeric(data_cleaned$survival_time)
 
 # 8. Save the cleaned data
-write.csv(data_cleaned, "final_cleaned_data.csv", row.names = FALSE)
+write.csv(data_cleaned, "../data/bone_marrow_cleaned_final.csv", row.names = FALSE)
 
 # 9. Print cleaning report
 cleaning_report <- list(
@@ -113,7 +113,7 @@ library(survminer)
 library(dplyr)
 
 # Read data
-data <- read.csv("final_cleaned_data.csv")
+data <- read.csv("../data/bone_marrow_cleaned_final.csv")
 
 # Convert Disease to factor with explicit levels
 data$Disease <- factor(data$Disease)
@@ -213,7 +213,7 @@ print(summary(final_model))
 
 # Save results
 selected_data <- data[, c(predictors, "survival_time", "survival_status")]
-write.csv(selected_data, "cox_selected_data.csv", row.names = FALSE)
+write.csv(selected_data, "../data/bone_marrow_cox_model_dataset.csv", row.names = FALSE)
 
 
 ```
@@ -354,3 +354,5 @@ tibble(risk_score = predict(cox_model), deviance_resids = cox_resids) |>
 qqnorm(cox_resids, ylab = "Deviance Residuals", xlab = "N(0,1) Quantiles")
 abline(0, 1, lty = 2)
 ```
+
+

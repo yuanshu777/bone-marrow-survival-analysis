@@ -7,8 +7,8 @@ This project applies survival analysis to pediatric bone marrow transplant data 
 Which patient and treatment variables are linked to higher hazard and poorer survival outcomes?
 
 ## Dataset
-- `bone-marrow.arff` (core source)
-- Derived files: `475projdata.csv`, `final_cleaned_data.csv`, `cox_selected_data.csv`
+- `data/bone_marrow_source.arff` (core source)
+- Derived files: `data/bone_marrow_raw_export.csv`, `data/bone_marrow_cleaned_final.csv`, `data/bone_marrow_cox_model_dataset.csv`
 - Sample size in processed data: 187 observations
 
 ## Methodology
@@ -19,16 +19,17 @@ Which patient and treatment variables are linked to higher hazard and poorer sur
 - Stepwise/selection-based model refinement
 
 ## Repository Contents
-- `proj.Rmd`, `475p.qmd`: main analysis notebooks
-- `KM_plot.png` and `proj_files/figure-html/*`: generated visuals
-- `poster/`: poster assets, reflection, and presentation outputs
+- `analysis/survival_analysis.Rmd`, `analysis/survival_analysis.qmd`: main analysis notebooks
+- `figures/km_curve_overview.png`: representative survival visualization
+- `archive/rendered_figures/`: archived rendered chunk-level figure exports
+- `archive/poster_materials/`: archived poster files and presentation assets
 
 ## How to Reproduce
 ```r
 # In R
-rmarkdown::render("proj.Rmd")
+rmarkdown::render("analysis/survival_analysis.Rmd")
 # or
-quarto render 475p.qmd
+quarto render analysis/survival_analysis.qmd
 ```
 
 Required packages include `survival`, `survminer`, `dplyr`, `ggplot2`, `MASS`, `flexsurv`, `forestplot`.

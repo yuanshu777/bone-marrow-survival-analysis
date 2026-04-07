@@ -9,5 +9,5 @@ Survival analysis identifies clinically relevant variables associated with hazar
 - Diagnostic checks are included for model assumptions.
 
 ## Deliverables
-- Main report: `proj.Rmd` / `475p.qmd`
-- Poster artifacts in `poster/`
+- Main report: `analysis/survival_analysis.Rmd` / `analysis/survival_analysis.qmd`
+- Archived poster artifacts: `archive/poster_materials/`

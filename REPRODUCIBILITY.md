@@ -10,10 +10,10 @@ source("requirements.R")
 
 ## Run R Markdown Workflow
 ```r
-rmarkdown::render("proj.Rmd")
+rmarkdown::render("analysis/survival_analysis.Rmd")
 ```
 
 ## Run Quarto Workflow
 ```bash
-quarto render 475p.qmd
+quarto render analysis/survival_analysis.qmd
 ```

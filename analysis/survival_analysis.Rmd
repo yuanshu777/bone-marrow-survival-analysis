@@ -1,4 +1,4 @@
----
+﻿---
 
 output: html_document
 date: "2024-11-25"
@@ -7,9 +7,9 @@ date: "2024-11-25"
 
 ```{r }
 library("foreign")
-data <- read.arff("bone-marrow.arff")
+data <- read.arff("../data/bone_marrow_source.arff")
 
-#write.csv(data, file = "475projdata.csv")
+# write.csv(data, file = "../data/bone_marrow_raw_export.csv")
 ```
 
 ```{r}
@@ -377,7 +377,7 @@ library(survival)
 library(survminer)
 library(flexsurv)
 
-df <- read.arff("bone-marrow.arff")
+df <- read.arff("../data/bone_marrow_source.arff")
 
 # Inspect the data
 head(df)
@@ -434,6 +434,7 @@ legend("bottomleft", legend = c("KM Estimate", paste(best_model_name, "Model")),
 
 
 ```
+
 
 
 

@@ -1,10 +1,10 @@
 ﻿# Dataset Documentation
 
 ## Core Files
-- `bone-marrow.arff`
-- `475projdata.csv`
-- `final_cleaned_data.csv`
-- `cox_selected_data.csv`
+- `data/bone_marrow_source.arff`
+- `data/bone_marrow_raw_export.csv`
+- `data/bone_marrow_cleaned_final.csv`
+- `data/bone_marrow_cox_model_dataset.csv`
 
 ## Shape
 - Processed sample size: 187 rows
