@@ -1,0 +1,439 @@
+---
+
+output: html_document
+date: "2024-11-25"
+---
+
+
+```{r }
+library("foreign")
+data <- read.arff("bone-marrow.arff")
+
+#write.csv(data, file = "475projdata.csv")
+```
+
+```{r}
+# Load required libraries
+library(survival)
+library(survminer)
+library(dplyr)
+library(ggplot2)
+
+
+# Create survival object
+surv_obj <- Surv(time = data$survival_time, event = data$survival_status)
+
+# Fit Kaplan-Meier model for overall survival
+km_fit <- survfit(surv_obj ~ 1)
+
+# Basic survival analysis
+fit_disease <- survfit(surv_obj ~ Disease, data = data)
+fit_risk <- survfit(surv_obj ~ Riskgroup, data = data)
+fit_gender <- survfit(surv_obj ~ Recipientgender, data = data)
+fit_age <- survfit(surv_obj ~ Recipientage10, data = data)
+
+# Cox proportional hazards model
+cox_model <- coxph(surv_obj ~ Disease + Riskgroup + Donorage35 + 
+                   Recipientage10 + HLAmismatch + Stemcellsource + 
+                   CD34kgx10d6 + Relapse, data = data)
+
+# Create visualizations
+# Overall survival curve
+p1 <- ggsurvplot(km_fit,
+                 data = data,
+                 risk.table = TRUE,
+                 risk.table.height = 0.25,
+                 title = "Overall Survival",
+                 xlab = "Time (days)",
+                 ylab = "Survival probability")
+
+# Disease-specific survival
+p2 <- ggsurvplot(fit_disease,
+                 data = data,
+                 pval = TRUE,
+                 risk.table = TRUE,
+                 risk.table.height = 0.25,
+                 title = "Survival by Disease Type",
+                 xlab = "Time (days)",
+                 ylab = "Survival probability")
+
+# Risk group survival
+p3 <- ggsurvplot(fit_risk,
+                 data = data,
+                 pval = TRUE,
+                 risk.table = TRUE,
+                 risk.table.height = 0.25,
+                 title = "Survival by Risk Group",
+                 xlab = "Time (days)",
+                 ylab = "Survival probability")
+
+# Perform log-rank tests
+log_rank_disease <- survdiff(surv_obj ~ Disease, data = data)
+log_rank_risk <- survdiff(surv_obj ~ Riskgroup, data = data)
+log_rank_gender <- survdiff(surv_obj ~ Recipientgender, data = data)
+log_rank_age <- survdiff(surv_obj ~ Recipientage10, data = data)
+
+# Calculate median survival times
+median_survival <- summary(km_fit)$table["median"]
+disease_medians <- summary(fit_disease)$table[, "median"]
+
+# Print summary statistics
+summary(cox_model)
+anova(cox_model)
+
+# Create summary table of key findings
+summary_table <- data.frame(
+  Variable = c("Overall", levels(factor(data$Disease))),
+  Median_Survival = c(median_survival, disease_medians),
+  Events = table(data$survival_status)[2],
+  Total = nrow(data)
+)
+
+```
+
+
+```{r}
+# Load required libraries
+library(survival)
+library(dplyr)
+
+# Function to perform univariate Cox regression
+perform_univariate_cox <- function(data) {
+  # List of predictor variables (excluding survival_time and survival_status)
+  predictors <- setdiff(names(data), c("survival_time", "survival_status"))
+  
+  # Store results
+  results <- data.frame(
+    variable = character(),
+    hazard_ratio = numeric(),
+    conf_int_lower = numeric(),
+    conf_int_upper = numeric(),
+    p_value = numeric(),
+    stringsAsFactors = FALSE
+  )
+  
+  # Perform univariate Cox regression for each predictor
+  for (var in predictors) {
+    # Handle missing data
+    complete_data <- data[!is.na(data[[var]]), ]
+    
+    # Create formula
+    formula <- as.formula(paste("Surv(survival_time, survival_status) ~", var))
+    
+    # Fit Cox model
+    tryCatch({
+      cox_model <- coxph(formula, data = complete_data)
+      
+      # Extract results
+      coef <- summary(cox_model)$coefficients[1, ]
+      conf_int <- exp(confint(cox_model))
+      
+      results <- rbind(results, data.frame(
+        variable = var,
+        hazard_ratio = exp(coef["coef"]),
+        conf_int_lower = conf_int[1],
+        conf_int_upper = conf_int[2],
+        p_value = coef["Pr(>|z|)"],
+        stringsAsFactors = FALSE
+      ))
+    }, error = function(e) {
+      message(paste("Error in processing variable:", var))
+    })
+  }
+  
+  # Sort results by p-value
+  results <- results[order(results$p_value), ]
+  
+  return(results)
+}
+
+# Perform analysis
+cox_results <- perform_univariate_cox(data)
+
+# Add significance levels
+cox_results$significance <- ifelse(cox_results$p_value < 0.001, "***",
+                          ifelse(cox_results$p_value < 0.01, "**",
+                          ifelse(cox_results$p_value < 0.05, "*", "ns")))
+
+# Print formatted results
+print_formatted_results <- function(results) {
+  cat("\nUnivariate Cox Regression Results\n")
+  cat("================================\n\n")
+  
+  formatted_results <- data.frame(
+    Variable = results$variable,
+    "Hazard Ratio" = sprintf("%.2f", results$hazard_ratio),
+    "95% CI" = sprintf("(%.2f-%.2f)", results$conf_int_lower, results$conf_int_upper),
+    "P-value" = sprintf("%.3f %s", results$p_value, results$significance)
+  )
+  
+  print(formatted_results, row.names = FALSE)
+}
+
+print_formatted_results(cox_results)
+
+# Create forest plot for significant variables
+library(forestplot)
+
+# Select significant variables (p < 0.05)
+sig_results <- subset(cox_results, p_value < 0.05)
+
+# Create forest plot
+forestplot(
+  labeltext = sig_results$variable,
+  mean = log(sig_results$hazard_ratio),
+  lower = log(sig_results$conf_int_lower),
+  upper = log(sig_results$conf_int_upper),
+  zero = 0,
+  xlab = "Log Hazard Ratio",
+  title = "Forest Plot of Significant Predictors"
+)
+```
+
+```{R}
+# Load necessary libraries
+library(survival)
+library(survminer)
+
+# Ensure the dataset is loaded
+# Replace 'data' with your dataset name
+
+# Select the variables for the Cox PH model
+cox_variables <- c("PLTrecovery", "ANCrecovery", "Rbodymass", "Relapse", 
+                   "extcGvHD", "CD3dkgx10d8", "Recipientage", "aGvHDIIIIV", 
+                   "CD34kgx10d6")
+
+# Ensure the data does not contain missing values
+data <- na.omit(data)
+
+# Define the survival object
+surv_obj <- Surv(time = data$survival_time, event = data$survival_status)
+
+# Fit the Cox Proportional Hazards model
+cox_model <- coxph(as.formula(paste("surv_obj ~", paste(cox_variables, collapse = " + "))), data = data)
+
+# Display the summary of the model
+summary(cox_model)
+
+# Test proportional hazards assumption
+ph_test <- cox.zph(cox_model)
+print(ph_test)
+
+# Create diagnostic plots
+par(mfrow=c(2,2))
+plot(ph_test)
+
+
+# Create residual plots
+ggcoxdiagnostics(cox_model, type = "martingale")
+ggcoxdiagnostics(cox_model, type = "deviance")
+
+
+
+```
+
+```{r}
+# Load necessary libraries
+
+library(survival)
+library(survminer)
+
+
+cox_unstratified_model <- coxph(Surv(survival_time, survival_status) ~ 
+                                Relapse + PLTrecovery + ANCrecovery + 
+                                Rbodymass + extcGvHD + CD3dkgx10d8 + 
+                                Recipientage + aGvHDIIIIV + CD34kgx10d6, 
+                                data = data)
+
+# Fit a Cox model with Relapse as strata
+cox_stratified_model <- coxph(Surv(survival_time, survival_status) ~ 
+                              strata(Relapse) + 
+                              PLTrecovery + ANCrecovery + Rbodymass + 
+                              strata(extcGvHD) + CD3dkgx10d8 + Recipientage + 
+                              aGvHDIIIIV + CD34kgx10d6, 
+                              data = data)
+
+# Load necessary libraries
+library(survival)
+
+# Dynamically create a formula excluding survival_time, survival_status, and Relapse
+all_vars <- setdiff(names(data), c("survival_time", "survival_status"))
+cox_formula <- as.formula(paste("Surv(survival_time, survival_status) ~ ."))
+
+# Fit a Cox model with Relapse as strata
+cox_model <- coxph(Surv(survival_time, survival_status) ~ ., data = data)
+
+# Summarize the model
+summary(cox_model)
+
+
+# Display the summary of the model
+summary(cox_model)
+
+# # Test proportional hazards assumption
+# ph_test <- cox.zph(cox_model)
+# print(ph_test)
+
+# Create diagnostic plots
+par(mfrow=c(2,2))
+plot(ph_test)
+
+
+# Create residual plots
+ggcoxdiagnostics(cox_model, type = "martingale")
+ggcoxdiagnostics(cox_model, type = "deviance")
+
+
+
+# Fit a Cox model with Relapse as strata
+cox_model1 <- coxph(Surv(survival_time, survival_status) ~ 
+                       PLTrecovery + ANCrecovery + 
+                      Rbodymass + CD3dkgx10d8 + extcGvHD + aGvHDIIIIV +
+                      Relapse + HLAmatch + DonorCMV + Donorage + Stemcellsource,
+                    data = data)
+
+# Display the summary of the model
+summary(cox_model1)
+
+
+# Create diagnostic plots
+par(mfrow=c(2,2))
+plot(ph_test)
+
+
+# Create residual plots
+ggcoxdiagnostics(cox_model1, type = "martingale")
+ggcoxdiagnostics(cox_model1, type = "deviance")
+
+ 
+
+```
+
+
+```{r}
+# Load required libraries
+library(survival)
+library(MASS)
+library(survminer)
+
+data <- na.omit(data)  
+# Create the full model with all predictors
+# First, create the formula with all variables except survival_time and survival_status
+all_vars <- setdiff(names(data), c("survival_time", "survival_status"))
+full_formula <- as.formula(paste("Surv(survival_time, survival_status) ~", 
+                               paste(all_vars, collapse = " + ")))
+
+# Fit the full model
+full_model <- coxph(full_formula, data = data)
+
+# Perform stepwise selection using AIC criterion
+stepwise_model <- step(full_model, 
+                      direction = "both",
+                      trace = 1)
+
+# Print summary of the final model
+summary_result <- summary(stepwise_model)
+
+# Calculate concordance index
+concordance <- summary_result$concordance
+
+# Extract final model coefficients and statistics
+final_coefficients <- data.frame(
+  Variable = names(coef(stepwise_model)),
+  Hazard_Ratio = exp(coef(stepwise_model)),
+  CI_Lower = exp(confint(stepwise_model))[,1],
+  CI_Upper = exp(confint(stepwise_model))[,2],
+  P_value = summary_result$coefficients[,5]
+)
+
+# Print detailed results
+cat("\nStepwise Cox Regression Results\n")
+cat("===============================\n\n")
+cat("Model Performance:\n")
+cat("Concordance Index:", round(concordance[1], 3), "\n")
+cat("(95% CI:", round(concordance[2], 3), "-", round(concordance[3], 3), ")\n\n")
+
+# Create proportional hazards test
+ph_test <- cox.zph(stepwise_model)
+
+# Plot diagnostics
+par(mfrow = c(2, 2))
+plot(stepwise_model)
+plot(ph_test)
+
+# Print final model variables and their statistics
+print(final_coefficients)
+
+# Create visual representation of results
+ggforest(stepwise_model, 
+         data = data,
+         main = "Final Model: Hazard Ratios with 95% CI")
+
+```
+
+```{r}
+# Load necessary libraries
+library(survival)
+library(survminer)
+library(flexsurv)
+
+df <- read.arff("bone-marrow.arff")
+
+# Inspect the data
+head(df)
+
+# Step 1: Prepare Survival Object
+# time: survival time
+# status: censoring status (1 = event occurred, 0 = censored)
+# We'll use 'sex' as a grouping variable (1 = male, 2 = female)
+
+# Create a survival object
+surv_obj <- Surv(time = df$survival_time, event = df$survival_status)
+
+# Step 2: Plot Kaplan-Meier Curves
+# Plot KM curves stratified by sex
+km_fit <- survfit(surv_obj ~ Relapse, data = df)
+
+# Basic KM plot
+ggsurvplot(km_fit, data = df, pval = TRUE,
+           legend.labs = c("Male", "Female"),
+           xlab = "Time in days", ylab = "Survival probability",
+           title = "Kaplan-Meier Survival Curves by Relapse")
+
+# Step 3: Fit Parametric Survival Models
+
+# Fit models with different distributions
+models <- list(
+  exponential = flexsurvreg(surv_obj ~ Relapse, data = df, dist = "exponential"),
+  weibull = flexsurvreg(surv_obj ~ Relapse, data = df, dist = "weibull"),
+  lognormal = flexsurvreg(surv_obj ~ Relapse, data = df, dist = "lognormal"),
+  loglogistic = flexsurvreg(surv_obj ~ Relapse, data = df, dist = "llogis")
+)
+
+# Step 4: Compare Models Using AIC
+aic_values <- sapply(models, AIC)
+print(aic_values)
+
+# Select the model with the lowest AIC
+best_model_name <- names(which.min(aic_values))
+best_model <- models[[best_model_name]]
+
+cat("Best-fitting model:", best_model_name, "\n")
+
+# Step 5: Diagnostic Plots
+# Plot the fitted survival curve from the best model against the KM curve
+plot(km_fit, conf.int = FALSE, col = "blue",
+     main = paste("KM Curve vs.", best_model_name, "Model"),
+     xlab = "Time in days", ylab = "Survival probability")
+lines(best_model, col = "red", lwd = 2)
+legend("bottomleft", legend = c("KM Estimate", paste(best_model_name, "Model")),
+       col = c("blue", "red"), lwd = 2)
+
+# Optional: Check model diagnostics
+# For example, plot residuals or perform goodness-of-fit tests
+
+
+```
+
+
+

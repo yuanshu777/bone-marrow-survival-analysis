@@ -1,0 +1,640 @@
+---
+title: "475p"
+format: html
+editor: visual
+---
+
+```{r}
+library(dplyr)
+library(survminer)
+library(survival)
+library("foreign")
+
+data <- read.csv("bone-marrow.csv")
+
+
+data[data == "-1"] <- NA
+data[data == "1e+06"] <- NA
+
+
+categorical_cols <- c("Recipientgender", "Stemcellsource", "Donorage35", "IIIV", 
+                     "Gendermatch", "DonorABO", "RecipientABO", "RecipientRh", 
+                     "ABOmatch", "CMVstatus", "DonorCMV", "RecipientCMV", 
+                     "Disease", "Riskgroup", "Txpostrelapse", "Diseasegroup",
+                     "HLAmatch", "HLAmismatch", "Antigen", "Alel", "HLAgrI",
+                     "Recipientage10", "Recipientageint", "Relapse", 
+                     "aGvHDIIIIV", "extcGvHD", "survival_status")
+
+
+for(col in categorical_cols) {
+  if(col %in% names(data)) {
+    data[[col]] <- as.factor(data[[col]])
+  }
+}
+
+
+
+numeric_cols <- names(data)[sapply(data, is.numeric)]
+numeric_cols <- setdiff(numeric_cols, categorical_cols)  
+
+
+for(col in numeric_cols) {
+  
+  Q1 <- quantile(data[[col]], 0.25, na.rm = TRUE)
+  Q3 <- quantile(data[[col]], 0.75, na.rm = TRUE)
+  IQR <- Q3 - Q1
+  
+  
+  lower_bound <- Q1 - 1.5 * IQR
+  upper_bound <- Q3 + 1.5 * IQR
+  
+  
+  data[[col]][data[[col]] < lower_bound | data[[col]] > upper_bound] <- NA
+}
+
+
+na_ratio <- rowSums(is.na(data)) / ncol(data)
+
+data_cleaned <- data[na_ratio <= 0.3, ]
+
+
+for(col in numeric_cols) {
+  median_val <- median(data_cleaned[[col]], na.rm = TRUE)
+  data_cleaned[[col]][is.na(data_cleaned[[col]])] <- median_val
+}
+
+
+for(col in categorical_cols) {
+  if(col %in% names(data_cleaned)) {
+    mode_val <- names(sort(table(data_cleaned[[col]]), decreasing = TRUE))[1]
+    data_cleaned[[col]][is.na(data_cleaned[[col]])] <- mode_val
+  }
+}
+
+
+data_cleaned$survival_time[data_cleaned$survival_time < 0] <- NA
+data_cleaned$survival_time <- as.numeric(data_cleaned$survival_time)
+
+
+write.csv(data_cleaned, "final_cleaned_data.csv", row.names = FALSE)
+
+
+cleaning_report <- list(
+  original_rows = nrow(data),
+  cleaned_rows = nrow(data_cleaned),
+  removed_rows = nrow(data) - nrow(data_cleaned),
+  na_before = sum(is.na(data)),
+  na_after = sum(is.na(data_cleaned))
+)
+
+print("Data Cleaning Report:")
+print(paste("Original number of rows:", cleaning_report$original_rows))
+print(paste("Final number of rows:", cleaning_report$cleaned_rows))
+print(paste("Removed rows:", cleaning_report$removed_rows))
+print(paste("NAs before cleaning:", cleaning_report$na_before))
+print(paste("NAs after cleaning:", cleaning_report$na_after))
+
+
+summary(data_cleaned)
+```
+
+```{r}
+# Load required packages
+library(survival)
+library(glmnet)
+library(survminer)
+library(dplyr)
+
+# Read data
+data <- read.csv("final_cleaned_data.csv")
+
+# Convert Disease to factor with explicit levels
+data$Disease <- factor(data$Disease)
+print("Disease categories:")
+print(levels(data$Disease))
+
+# Convert other character variables to factors
+data <- data %>% mutate_if(is.character, as.factor)
+
+# Ensure survival_status is numeric
+data$survival_status <- as.numeric(as.character(data$survival_status))
+
+# 1. Univariate Cox analysis
+univariate_cox <- function(data, time_col, status_col, feature) {
+  formula <- as.formula(paste("Surv(", time_col, ",", status_col, ") ~", feature))
+  fit <- tryCatch({
+    coxph(formula, data = data)
+  }, error = function(e) {
+    return(NULL)
+  })
+  
+  if(!is.null(fit)) {
+    summary <- summary(fit)
+    # Handle multi-level factors
+    if(length(coef(fit)) > 1) {
+      results <- data.frame(
+        feature = paste(feature, names(coef(fit)), sep="_"),
+        hazard_ratio = exp(coef(fit)),
+        p_value = summary$coefficients[,5],
+        concordance = summary$concordance[1]
+      )
+    } else {
+      results <- data.frame(
+        feature = feature,
+        hazard_ratio = exp(coef(fit)),
+        p_value = summary$coefficients[,5],
+        concordance = summary$concordance[1]
+      )
+    }
+    return(results)
+  }
+  return(NULL)
+}
+
+# Get predictors
+predictors <- names(data)[!names(data) %in% c("survival_time", "survival_status")]
+
+# Perform univariate Cox analysis
+cox_results <- list()
+for(predictor in predictors) {
+  result <- univariate_cox(data, "survival_time", "survival_status", predictor)
+  if(!is.null(result)) {
+    cox_results[[predictor]] <- result
+  }
+}
+
+# Combine results and sort by p-value
+cox_results_df <- do.call(rbind, cox_results)
+cox_results_df <- cox_results_df[order(cox_results_df$p_value), ]
+
+# 2. LASSO Cox regression
+# Create model matrix with proper handling of factors
+X <- model.matrix(~ . - survival_time - survival_status, data = data)[,-1]
+y <- Surv(data$survival_time, data$survival_status)
+
+# Perform LASSO
+set.seed(123)
+cv_fit <- cv.glmnet(X, y, family = "cox", alpha = 1)
+lasso_fit <- glmnet(X, y, family = "cox", lambda = cv_fit$lambda.min)
+
+# Get LASSO-selected features
+lasso_coef <- coef(lasso_fit)
+selected_features_lasso <- rownames(lasso_coef)[which(lasso_coef != 0)]
+
+# 3. Combine results
+# Get significant features from univariate analysis
+significant_univariate <- cox_results_df$feature[cox_results_df$p_value < 0.05]
+
+# Create final feature set
+final_features <- unique(c(significant_univariate, selected_features_lasso))
+
+# Print results
+cat("\nSignificant features from univariate Cox regression (p < 0.05):\n")
+print(cox_results_df[cox_results_df$p_value < 0.05, ])
+
+cat("\nFeatures selected by LASSO:\n")
+print(selected_features_lasso)
+
+# 4. Final Cox model
+# Create formula ensuring proper handling of categorical variables
+predictors_formula <- paste(predictors, collapse=" + ")
+final_formula <- as.formula(paste("Surv(survival_time, survival_status) ~", predictors_formula))
+
+# Fit final model
+final_model <- coxph(final_formula, data = data)
+print(summary(final_model))
+
+# Save results
+selected_data <- data[, c(predictors, "survival_time", "survival_status")]
+write.csv(selected_data, "cox_selected_data.csv", row.names = FALSE)
+
+
+```
+
+```{r}
+print(final_features)
+
+# Create survival object
+surv_obj <- Surv(time = selected_data$survival_time, event = selected_data$survival_status)
+
+cox_model <- coxph(surv_obj ~ Disease + Rbodymass + Relapse + Recipientage + CD3dkgx10d8 + CD34kgx10d6 + aGvHDIIIIV + Recipientage10 + Donorage35 + RecipientRh , data = selected_data)
+
+summary(cox_model)
+```
+
+```{r}
+cox_model <- coxph(surv_obj ~ Disease + Relapse + aGvHDIIIIV + RecipientRh , data = selected_data)
+
+summary(cox_model)
+```
+
+```{r}
+# Check the proportional hazards assumption
+ph_test <- cox.zph(cox_model)
+print(ph_test)
+
+# Plot Schoenfeld residuals for diagnostics
+plot(ph_test)
+
+
+# Generate survival curves based on the Cox model
+ggsurv <- ggsurvplot(survfit(cox_model), 
+                     data = selected_data, 
+                     conf.int = TRUE, 
+                     risk.table = TRUE, 
+                     xlab = "Time (days)", 
+                     ylab = "Survival Probability",
+                     title = "Survival Curve from Cox Model")
+print(ggsurv)
+
+ggcoxdiagnostics(cox_model, type = "deviance", ggtheme = theme_minimal())
+```
+
+```{r}
+library(forestplot)
+library(dplyr)
+library(broom)
+
+# Extract and format data from the Cox model
+# Using tidy() to convert model results into a clean dataframe
+cox_data <- broom::tidy(cox_model, conf.int = TRUE) %>%
+  mutate(
+    # Create readable English labels
+    label = case_when(
+      term == "Disease" ~ "Disease Status",
+      term == "Relapse" ~ "Relapse Status",
+      term == "aGvHDIIIIV" ~ "Acute GVHD III-IV",
+      term == "RecipientRh" ~ "Recipient Rh Factor",
+      TRUE ~ term
+    ),
+    # Format HR values and confidence intervals
+    estimate_text = sprintf("%.2f (%.2f-%.2f)", 
+                          exp(estimate),  # HR value
+                          exp(conf.low),  # 95% CI lower bound
+                          exp(conf.high)  # 95% CI upper bound
+    )
+  )
+
+# Create the forest plot data matrix
+# First column: variable labels, Second column: HR values and CI
+forestplot_matrix <- cbind(
+  c("Risk Factors", cox_data$label),  # Column 1: Variable names
+  c("HR (95% CI)", cox_data$estimate_text)  # Column 2: HR values and CI
+)
+
+# Create the forest plot
+forestplot(
+  # Basic data settings
+  forestplot_matrix,  # Text matrix to display
+  mean = c(NA, exp(cox_data$estimate)),  # HR point estimates
+  lower = c(NA, exp(cox_data$conf.low)),  # CI lower bounds
+  upper = c(NA, exp(cox_data$conf.high)),  # CI upper bounds
+  
+  # Graph layout settings
+  boxsize = 0.3,  # Size of boxes
+  graphwidth = unit(4, "inches"),  # Width of graph
+  
+  # Title settings
+  title = "Forest Plot of Risk Factors for Survival Analysis",
+  subtitle = paste("Based on Cox Proportional Hazards Model\n",
+                  format(Sys.Date(), "%Y-%m-%d")),
+  
+  # Color settings
+  col = fpColors(
+    box = "#2E86C1",      # Box color: deep blue
+    lines = "#2E86C1",    # Line color
+    zero = "#CB4335",     # Reference line color: dark red
+    summary = "#1B4F72"   # Summary statistics color: darker blue
+  ),
+  
+  # Reference line settings
+  zero = 1,  # Reference line at HR=1
+  
+  # Text format settings
+  txt_gp = fpTxtGp(
+    ticks = gpar(cex = 0.85),    # Tick text size
+    xlab = gpar(cex = 0.9),      # x-axis label size
+    title = gpar(cex = 1.2)      # Title size
+  ),
+  
+  # Helper element settings
+  grid = TRUE,  # Show grid lines
+  
+  # x-axis settings
+  xticks = c(0.5, 1, 2, 4),  # x-axis tick values
+  xlog = TRUE  # Use logarithmic scale
+)
+
+```
+
+```{r}
+
+ggforest(cox_model, data = data, main = "Hazard Ratio (HR) Forest Plot") 
+```
+
+
+
+```{r}
+cox_resids <- resid(cox_model, type = "deviance")
+# 3. Plot deviance residuals vs risk score
+tibble(risk_score = predict(cox_model), deviance_resids = cox_resids) |>
+  ggplot(aes(x = risk_score, y = deviance_resids)) +
+  geom_point() +
+  geom_hline(yintercept = 0, linetype = 2) +
+  xlab("Risk Score") +
+  ylab("Deviance Residuals")
+
+# 4. Q-Q plot of deviance residuals
+qqnorm(cox_resids, ylab = "Deviance Residuals", xlab = "N(0,1) Quantiles")
+abline(0, 1, lty = 2)
+```
+
+```{r}
+library(survival)
+library(tidyverse)
+library(janitor)
+library(survminer)
+library(foreign)
+library(ggplot2)
+library(dplyr)
+library(patchwork)
+
+patients <- read.arff("bone-marrow.arff")
+# write.csv(patients, "bone-marrow.csv")
+
+
+
+# Load and clean the data
+
+
+patients <- read.csv("bone-marrow.csv")
+patients <- patients %>%
+  mutate(survival_time = survival_time/30,
+    CD34kgx10d6 = as.factor(ifelse(CD34kgx10d6 >= mean(CD34kgx10d6),"high","low")),
+    Gendermatch = as.factor(Gendermatch),
+    Stemcellsource = as.factor(Stemcellsource),
+    Diseasegroup = as.factor(case_when(Diseasegroup == 1 ~"malignant", Diseasegroup == 0 ~ "not malignant")),
+    Riskgroup = as.factor(Riskgroup),
+    HLAmismatch = as.factor(HLAmismatch),
+    ABOmatch=as.factor(ABOmatch)
+    # Antigen = as.factor(as.numeric(Antigen) + 1),
+    ) |>na.omit()
+
+
+#EDA (scatterplot, and others relevant plots)
+eda <- patients |> mutate (survival_status = as.factor(survival_status)) |> select(survival_status,survival_time,Diseasegroup, Stemcellsource, Gendermatch, CD34kgx10d6)
+# eda0 <- ggplot(patients, aes(x = Riskgroup, y = survival_time, fill = survival_status)) +
+#   geom_boxplot() +
+#   labs(
+#     title = "Survival Time by Low and High Risk",
+#     x = "Risk Type",
+#     y = "Survival Time",
+#     fill = "Survival Status"
+#   ) +
+#   theme_minimal()
+
+
+# eda1<-ggplot(patients, aes(x = Donorage, y = survival_time, color = survival_status)) +
+#   geom_point(alpha = 0.7) +
+#   labs(
+#     title = "Survival Time vs Donor Age",
+#     x = "Donor Age",
+#     y = "Survival Time",
+#     color = "Survival Status"
+#   ) +
+#   theme_minimal()
+
+eda2<-ggplot(eda, aes(x = Gendermatch, y = survival_time, fill = survival_status)) +
+  geom_boxplot() +
+  labs(
+    title = "Survival Time by Gender Match",
+    x = "Gender Match",
+    y = "Survival Time",
+    fill = "Survival Status"
+  ) +
+  theme_minimal()
+
+eda3 <- ggplot(eda, aes(x = Stemcellsource, y = survival_time, fill = survival_status)) +
+  geom_boxplot() +
+  labs(
+    title = "Survival Time by Stem\n Cell Source",
+    x = "Stem Cell Source",
+    y = "Survival Time",
+    fill = "Survival Status"
+  ) +
+  theme_minimal()
+eda4 <- ggplot(eda, aes(x = Diseasegroup, y = survival_time, fill = survival_status)) +
+  geom_boxplot() +
+  labs(
+    title = "Survival Time by Disease group",
+    x = "Disease Type",
+    y = "Survival Time",
+    fill = "Survival Status"
+  ) +
+  theme_minimal() + theme(plot.title = element_text(size = 14), axis.title.x = element_text(size=14), axis.title.y = element_text(size = 14),plot.caption = element_text(size=12))
+
+eda5 <- ggplot(eda, aes(x = CD34kgx10d6, y = survival_time, fill = survival_status)) +
+  geom_boxplot() +
+  labs(
+    title = "Survival Time by Receipient\n CD34+ Groups",
+    x = "CD34+ Types",
+    y = "Survival Time",
+    fill = "Survival Status", caption = "Notes: CD34⁺ cells are stem cells in bone marrow that regenerate blood cells and are crucial for bone marrow transplants in blood cancer treatment.\n Here we measure CD34⁺ concentration per kg of body weight of patients and group CD34⁺ into group of high (above sample mean) concentration  \n and low (below or equal to sample mean) concentration."
+  ) +
+  theme_minimal() + theme(plot.title = element_text(size = 14), axis.title.x = element_text(size=14), axis.title.y = element_text(size = 14),plot.caption = element_text(size=12))
+(eda4|eda5)
+
+# eda5 <- ggplot(patients, aes(x = HLAmismatch, y = survival_time, fill = survival_status)) +
+#   geom_boxplot() +
+#   labs(
+#     title = "Survival Time by HLA mismatch",
+#     x = "HLAmismatch",
+#     y = "Survival Time",
+#     fill = "Survival Status"
+#   ) +
+#   theme_minimal()
+# 
+# eda6 <- ggplot(patients, aes(x = ABOmatch, y = survival_time, fill = survival_status)) +
+#   geom_boxplot() +
+#   labs(
+#     title = "Survival Time by ABO match",
+#     x = "ABOmatch",
+#     y = "Survival Time",
+#     fill = "Survival Status"
+#   ) +
+#   theme_minimal()
+# 
+# eda7 <- ggplot(patients, aes(x = Antigen, y = survival_time, fill = survival_status)) +
+#   geom_boxplot() +
+#   labs(
+#     title = "Survival Time by Antigen Differences",
+#     x = "Antigen Differences",
+#     y = "Survival Time",
+#     fill = "Survival Status", caption = "In how many antigens there is difference beetwen the donor nad the recipient\n (0 - no differences, 1 - one difference,2 - two (three(3)) differences)"
+#   ) +
+#   theme_minimal()
+# 
+# (eda5|eda6)/eda7
+
+#surfit(Surv(survival_time, survival_status)~)
+
+
+
+# residual analysis ()
+```
+
+```{r}
+# KM.fit1 <- survfit(Surv(survival_time, survival_status)~ Donorage + Gendermatch + Stemcellsource, data = patients)
+# 
+# plot.KM.fit1 <- ggsurvplot(KM.fit1, conf.int = FALSE,  risk.table = FALSE, xlab = "Days", title = "K-M three predictors")
+
+
+# KM.fit2 <- survfit(Surv(survival_time, survival_status)~ Riskgroup, data = patients)
+# 
+# plot.KM.fit2 <- ggsurvplot(KM.fit2, conf.int = FALSE,  risk.table = FALSE, xlab = "Days", title = "K-M Risk")
+
+KM.fit3 <- survfit(Surv(survival_time, survival_status)~ Diseasegroup, data = patients)
+
+plot.KM.fit3 <- ggsurvplot(KM.fit3, conf.int = TRUE, risk.table = FALSE, xlab = "Months", title = "K-M Disease Malignance", font.caption = 12)
+
+plot.km3 <- plot.KM.fit3$plot +  geom_vline(xintercept = 12, linetype = "dashed", color = "red") + geom_vline(xintercept = 60, linetype = "dashed", color = "blue") + annotate("text", x = 12, y = 0.5, label = "Year 1", color = "red", angle = 90, vjust = -0.5) + annotate("text", x = 60, y = 0.5, label = "Year 5", color = "blue", angle = 90, vjust = -0.2)
+
+KM.fit4 <- survfit(Surv(survival_time, survival_status)~ CD34kgx10d6, data = patients)
+
+plot.KM.fit4 <- ggsurvplot(KM.fit4, conf.int = TRUE, risk.table = FALSE, xlab = "Months", title = "K-M CD34+ Group", caption = "Notes:This plots shows the distribution of Kaplan–Meier estimates for the patients with blood cancer in different strata (groups) disease malignance and groups\n of CD34+ cells in the range of about 120 months (10 years).", font.caption = 12)
+
+plot.km4 <- plot.KM.fit4$plot +  geom_vline(xintercept = 12, linetype = "dashed", color = "red") + geom_vline(xintercept = 60, linetype = "dashed", color = "blue") + annotate("text", x = 12, y = 0.5, label = "Year 1", color = "red", angle = 90, vjust = -0.2) + annotate("text", x = 60, y = 0.5, label = "Year 5", color = "blue", angle = 90, vjust = -0.2)
+
+(plot.km3|plot.km4)
+
+# (plot.KM.fit2$plot|plot.KM.fit3$plot)
+# 
+# KM.fit4 <- survfit(Surv(survival_time, survival_status)~ HLAmismatch, data = patients)
+# 
+# plot.KM.fit4 <- ggsurvplot(KM.fit4, conf.int = FALSE, risk.table = FALSE, xlab = "Days", title = "K-M HLAmismatch")
+# 
+# KM.fit5 <- survfit(Surv(survival_time, survival_status)~ ABOmatch, data = patients)
+# 
+# plot.KM.fit5 <- ggsurvplot(KM.fit5, conf.int = FALSE, risk.table = FALSE, xlab = "Days", title = "K-M ABO match")
+# 
+# (plot.KM.fit4$plot|plot.KM.fit5$plot)
+
+```
+
+```{r}
+
+#disease group
+
+KM.mag <- survfit(Surv(survival_time, survival_status)~ 1, data = patients, subset = (Diseasegroup == "malignant"))
+KM.nomag <- survfit(Surv(survival_time, survival_status)~ 1, data = patients, subset = (Diseasegroup == "not malignant"))
+
+result2 <- tibble(
+  time = rep(c(KM.mag$time, KM.nomag$time), 4),
+  surv = rep(c(KM.mag$surv, KM.nomag$surv), 4),
+  grp = rep(c(rep("malignant", length(KM.mag$time)), rep("not malignant", length(KM.nomag$time))), 4),
+  psi_inverse = c(
+    -log(c(KM.mag$surv, KM.nomag$surv)), # Exponential
+    log(-log(c(KM.mag$surv, KM.nomag$surv))), # Weibull
+    qnorm(1 - c(KM.mag$surv, KM.nomag$surv)), # Lognormal
+    log((1 - c(KM.mag$surv, KM.nomag$surv)) / c(KM.mag$surv, KM.nomag$surv)) # Log-logistic
+  ),
+  model = rep(c("exponential", "weibull", "lognormal", "loglogistic"), each = length(c(KM.mag$time, KM.nomag$time)))
+) %>%
+  mutate(model = factor(model, levels = c("exponential", "weibull", "lognormal", "loglogistic")))
+
+# Modified code for your diagnostic plots
+plot2 <- result2 |> 
+  ggplot(aes(x=log(time), y=psi_inverse, col = grp, group = grp, pch = grp)) + 
+  geom_point() +
+  xlab(expression(log(t))) + 
+  ylab(expression(paste(G^{-1}, "S(t)"))) +
+  geom_smooth(formula = y ~ x, method = "lm", se = F) +
+  facet_grid(~model) + 
+  scale_color_manual(name = "Group",
+    values = c("malignant" = "#FF9999", "not malignant" = "#99CCFF"), 
+    labels = c("Malignant", "Not Malignant")
+  ) +
+  labs(title ="Graphical Comparison of Model Fitness") +
+  scale_shape_manual(
+    name = "Group",
+    values = c("malignant" = 16, "not malignant" = 17),
+    labels = c("Malignant", "Not Malignant")) +
+  theme_bw() + # Added theme_bw() for cleaner look
+  theme(
+    panel.grid.minor = element_blank(),
+    strip.background = element_rect(fill = "white"),
+    legend.position = "right"
+  )
+
+plot1 <- result1 |> 
+  ggplot(aes(x=log(time), y=psi_inverse, col = grp, group = grp, pch = grp)) + 
+  geom_point() +
+  xlab(expression(log(t))) + 
+  ylab(expression(paste(G^{-1}, "S(t)"))) +
+  geom_smooth(formula = y ~ x, method = "lm", se = F) +
+  facet_grid(~model) + 
+  scale_color_manual(name = "Group",
+    values = c("high" = "#CCCCFF", "low" = "#99E6E6"), 
+    labels = c("High\n concentration", "Low\n concentration")
+  ) +
+  labs(
+    caption = "Notes: This plot shows the fitness of potential parametric models to the data on the\n malignance (upper figure) and CD34+ group (lower figure). The parallel lines\n with most points are aligned with the lines would indicate a comparative good\n fit, which is observed to be the lognormal model."
+  ) +
+  theme_bw() + # Added theme_bw()
+  theme(
+    plot.caption = element_text(size = 9),
+    panel.grid.minor = element_blank(),
+    strip.background = element_rect(fill = "white"),
+    legend.position = "right"
+  ) + 
+  guides(shape = "none")
+
+# Combine plots
+(plot2/plot1)
+```
+
+```{r}
+library(kableExtra)
+# AFT
+# exponential
+# aft_model1 <- survreg(Surv(survival_time, survival_status) ~ Riskgroup, data = patients, dist = "lognormal")
+# 
+# summary(aft_model1)
+
+#lognormal
+
+aft_model2 <- survreg(Surv(survival_time, survival_status) ~ Diseasegroup, data = patients, dist = "lognormal")
+
+summary(aft_model2)
+
+aft_model2_mag <- survreg(Surv(survival_time, survival_status) ~ 1, data = patients, subset = (Diseasegroup=="malignant"), dist = "lognormal")
+aft_model1_nomag <- survreg(Surv(survival_time, survival_status) ~ 1, data = patients, subset = (Diseasegroup=="not malignant"), dist = "lognormal")
+
+aft_model3 <- survreg(Surv(survival_time, survival_status) ~ Diseasegroup + CD34kgx10d6, data = patients, dist = "lognormal")
+summary(aft_model3)
+# type by hands
+model3_summary <- tibble(
+  Term = c("(Intercept)", "not malignant", "low CD34+", "Log(scale)"),
+  Value = c(8.774, 0.081, -1.186, 0.753),
+  `Std. Error` = c(0.494, 0.638, 0.496, 0.119),
+  z = c(17.76, 0.13, -2.39, 6.33),
+  p = c("< 2e-16", 0.899, 0.017, "2.5e-10")
+)
+kable(model3_summary, caption = "Effects of Malignance and CD34+ Cells on Survival") %>%
+  kable_styling(font_size = 12) %>% footnote(general = "This table shows the summay of estimates and their standard errors from the lognormal parametric model for predicting the survival time of patients. The z (z-score) and p (p-value) here are referred for any Wald Tests conducted on the coefficients to see if each covariate has influence on the expected survival time.")
+
+
+aft_model4 <- survreg(Surv(survival_time, survival_status) ~ Diseasegroup + CD34kgx10d6 + Diseasegroup * CD34kgx10d6, data = patients, dist = "lognormal")
+summary(aft_model4)
+
+lrt_sum <- anova(aft_model2, aft_model3, aft_model4)
+
+lrt_sum <- lrt_sum[,c(-2,-4,-6)]
+
+lrt_sum[,1] = c("Malignance","Malignance + CD34+","Malignance*CD34")
+CompareTo<- c("NA", "Malignance", "Malignance+CD34+")
+lrt_sum <- cbind(lrt_sum, CompareTo)
+kable(lrt_sum, caption = "LRT Summaries of Parametric Models", digits = 3) %>%
+  kable_styling(font_size = 12) %>% footnote(general = "This table shows the Likelihood Ratio Test (LRT) results including the test statistics $-2*LL$, the degrees of freedom $Df$ and the corresponding p-values $Pr(>Chi)$ under chi-square distributions for selecting the parametric model. In this table, the model 3 with the interaction term also includes the main effects from previous model. The result shows that the second model is preferred compared to the third and first model.")
+
+```

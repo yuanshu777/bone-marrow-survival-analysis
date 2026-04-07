@@ -1,0 +1,13 @@
+﻿# R artifacts
+.Rhistory
+.RData
+.Rproj.user/
+
+# Rendered outputs
+*.html
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
