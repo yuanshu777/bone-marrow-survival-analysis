@@ -21,8 +21,15 @@ Which patient and treatment variables are linked to higher hazard and poorer sur
 ## Repository Contents
 - `analysis/survival_analysis.Rmd`, `analysis/survival_analysis.qmd`: main analysis notebooks
 - `figures/km_curve_overview.png`: representative survival visualization
+- `assets/bone_marrow_survival_poster.pdf`: final presentation poster
+- `assets/bone_marrow_survival_poster_preview.png`: poster preview image
 - `archive/rendered_figures/`: archived rendered chunk-level figure exports
 - `archive/poster_materials/`: archived poster files and presentation assets
+
+## Poster
+[Open Poster PDF](assets/bone_marrow_survival_poster.pdf)
+
+![Bone marrow survival poster preview](assets/bone_marrow_survival_poster_preview.png)
 
 ## How to Reproduce
 ```r
